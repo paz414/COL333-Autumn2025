@@ -71,13 +71,13 @@ static bool tripFeasible(const ProblemData& p, int heli_idx, const Trip& t){
     return true;
 }
 static bool planFeasible(const ProblemData& p, const HelicopterPlan& plan){
-    int hi = heliIdxById(plan.helicopter_id);
-    if (hi < 0) return false;
+    int helicopterIndex = heliIdxById(plan.helicopter_id);
+    if (helicopterIndex < 0) return false;
     double sum = 0.0;
     for (const auto& t : plan.trips){
         if (!t.drops.empty()){
-            if (!tripFeasible(p, hi, t)) return false;
-            sum += tripDistanceFor(p, hi, t);
+            if (!tripFeasible(p, helicopterIndex, t)) return false;
+            sum += tripDistanceFor(p, helicopterIndex, t);
         }
     }
     return sum <= p.d_max;
@@ -89,16 +89,16 @@ static bool solutionFeasible(const ProblemData& p, const Solution& sol){
 }
 
 static void repairPlan(const ProblemData& p, HelicopterPlan& plan){
-    int hi = heliIdxById(plan.helicopter_id);
-    if (hi < 0) return;
-    const auto& h = p.helicopters[hi];
+    int helicopterIndex = heliIdxById(plan.helicopter_id);
+    if (helicopterIndex < 0) return;
+    const auto& h = p.helicopters[helicopterIndex];
 
     double used = 0.0;
     vector<Trip> kept;
     for (auto t : plan.trips){
         if (t.drops.empty()) continue;
         syncPickups(t);
-        double td = tripDistanceFor(p, hi, t);
+        double td = tripDistanceFor(p, helicopterIndex, t);
         if (tripWeight(p, t) <= h.weight_capacity &&
             td <= h.distance_capacity &&
             used + td <= p.d_max)
@@ -120,7 +120,7 @@ Starting off with a simple solution.
 We need to find a single village within the helicopters reach
 Trip being performed = home_city --> village --> home_city
 The constraint are d_cap and D_max*/
-int greedyFind(int city_id, int helicopter_index, const ProblemData &problem, vector<pair<int,int>>& demand, double HelicopterDistanceCap, double remainD, int &better_choice){
+int greedyFind(int city_id, int helicopter_index, const ProblemData &problem, vector<pair<int,int>>& villageNeeds, double HelicopterDistanceCap, double remainD, int &preferredMealType){
     //WEIGHTS
     double weight_dry = problem.packages[0].weight;
     double weight_perish = problem.packages[1].weight;
@@ -133,20 +133,20 @@ int greedyFind(int city_id, int helicopter_index, const ProblemData &problem, ve
     double ratio_dry = value_dry/weight_dry;
     double ratio_perish = value_perish/weight_perish;
 
-    better_choice = (ratio_perish >= ratio_dry)? 1:0; //1 -> perishabled 0-> dry
+    preferredMealType = (ratio_perish >= ratio_dry)? 1:0; //1 -> perishabled 0-> dry
 
     int bestVillage = -1;
     double bestScore = 0;
 
     for (int village=0; village<problem.villages.size();village++){
-        if (demand[village].first <=0 && demand[village].second <=0) continue;
+        if (villageNeeds[village].first <=0 && villageNeeds[village].second <=0) continue;
 
         double roundTrip = 2.0 * ::distance(problem.cities[city_id-1],problem.villages[village].coords);
         if (roundTrip > HelicopterDistanceCap || roundTrip > remainD) continue;
         
         double WeightLeft = problem.helicopters[helicopter_index].weight_capacity;
-        int MealDemand = demand[village].first;
-        int OtherDemand = demand[village].second;
+        int MealDemand = villageNeeds[village].first;
+        int OtherDemand = villageNeeds[village].second;
         
         double valueNet = 0;
 
@@ -159,7 +159,7 @@ int greedyFind(int city_id, int helicopter_index, const ProblemData &problem, ve
             WeightLeft-= carried*weight;
             MealTemp-=carried;
         };
-        if(better_choice==1) {//1 -> perishable
+        if(preferredMealType==1) {//1 -> perishable
             pick(weight_perish,value_perish,MealDemand);
             pick(weight_dry,value_dry,MealDemand);
         }
@@ -259,12 +259,12 @@ static Solution generate_initial_solution(const ProblemData &problem){
     double weight_other = problem.packages[2].weight;
     
     //DEMANDS FOR MEALS AND OTHERS
-    vector<pair<int,int>> demand(problem.villages.size()); // <meal,other>
+    vector<pair<int,int>> villageNeeds(problem.villages.size()); // <meal,other>
     //Populating demands
     for(int village =0; village<(int)problem.villages.size(); village++){
         int n = problem.villages[village].population;
-        demand[village].first = 9*n; // dry + perish
-        demand[village].second = n; //other
+        villageNeeds[village].first = 9*n; // dry + perish
+        villageNeeds[village].second = n; //other
     }
     for(int h=0; h<(int)problem.helicopters.size();h++){
         auto current_helicopter = problem.helicopters[h];
@@ -277,12 +277,12 @@ static Solution generate_initial_solution(const ProblemData &problem){
         double distanceCap = current_helicopter.distance_capacity;
         double weightCap = current_helicopter.weight_capacity;
         
-        int better_choice=69;
-        int bestVillage = greedyFind(homeCity,h,problem,demand,distanceCap,remainingDistance,better_choice);
+        int preferredMealType=69;
+        int bestVillage = greedyFind(homeCity,h,problem,villageNeeds,distanceCap,remainingDistance,preferredMealType);
         if(bestVillage == -1) continue;
         
-        int MealDemand = demand[bestVillage].first;
-        int OtherDemand = demand[bestVillage].second;
+        int MealDemand = villageNeeds[bestVillage].first;
+        int OtherDemand = villageNeeds[bestVillage].second;
 
         int carried_dry=0, carried_perish=0, carried_other=0;
 
@@ -295,7 +295,7 @@ static Solution generate_initial_solution(const ProblemData &problem){
             Mtemp -= carried;
         };
 
-        if (better_choice==1) {
+        if (preferredMealType==1) {
             pickMeal(weight_perish, MealDemand, carried_perish);
             pickMeal(weight_dry, MealDemand, carried_dry);
         } else {
@@ -331,10 +331,10 @@ static Solution generate_initial_solution(const ProblemData &problem){
         helPlan.trips.push_back(trip);
 
         // update demands 
-        demand[bestVillage].first -= (carried_dry+carried_perish);
-        demand[bestVillage].first = max(0,demand[bestVillage].first);
-        demand[bestVillage].second -= carried_other;
-        demand[bestVillage].second = max(0,demand[bestVillage].second);
+        villageNeeds[bestVillage].first -= (carried_dry+carried_perish);
+        villageNeeds[bestVillage].first = max(0,villageNeeds[bestVillage].first);
+        villageNeeds[bestVillage].second -= carried_other;
+        villageNeeds[bestVillage].second = max(0,villageNeeds[bestVillage].second);
 
                                                                                                                 
         solution.pb(helPlan);
@@ -347,10 +347,10 @@ static Solution generate_initial_solution(const ProblemData &problem){
 //ATTEMPTS TO SWAP THE FIRST DROPS OF TWO RANDOMLY CHOSEN TRIPS
 static bool nbd_swap_two_trip_drops(Solution& sol, const ProblemData& p, std::mt19937& rng){
     vector<pair<int,int>> trips;
-    for (int hi = 0; hi < (int)sol.size(); ++hi){
-        for (int ti = 0; ti < (int)sol[hi].trips.size(); ++ti){
-            if (!sol[hi].trips[ti].drops.empty())
-                trips.emplace_back(hi, ti);
+    for (int helicopterIndex = 0; helicopterIndex < (int)sol.size(); ++helicopterIndex){
+        for (int tripIndex = 0; tripIndex < (int)sol[helicopterIndex].trips.size(); ++tripIndex){
+            if (!sol[helicopterIndex].trips[tripIndex].drops.empty())
+                trips.emplace_back(helicopterIndex, tripIndex);
         }
     }
     if ((int)trips.size() < 2) return false;
@@ -359,27 +359,27 @@ static bool nbd_swap_two_trip_drops(Solution& sol, const ProblemData& p, std::mt
     int a = U(rng), b = U(rng);
     if (a == b) return false;
 
-    auto [hi1, ti1] = trips[a];
-    auto [hi2, ti2] = trips[b];
+    auto [helicopterIndex1, tripIndex1] = trips[a];
+    auto [helicopterIndex2, tripIndex2] = trips[b];
 
-    int di1 = 0, di2 = 0;
+    int dropIndex1 = 0, dropIndex2 = 0;
 
 
     //SAVING THIS FOR LATER
-    Drop d1 = sol[hi1].trips[ti1].drops[di1];
-    Drop d2 = sol[hi2].trips[ti2].drops[di2];
+    Drop d1 = sol[helicopterIndex1].trips[tripIndex1].drops[dropIndex1];
+    Drop d2 = sol[helicopterIndex2].trips[tripIndex2].drops[dropIndex2];
 
-    sol[hi1].trips[ti1].drops[di1] = d2;
-    sol[hi2].trips[ti2].drops[di2] = d1;
-    syncPickups(sol[hi1].trips[ti1]);
-    syncPickups(sol[hi2].trips[ti2]);
+    sol[helicopterIndex1].trips[tripIndex1].drops[dropIndex1] = d2;
+    sol[helicopterIndex2].trips[tripIndex2].drops[dropIndex2] = d1;
+    syncPickups(sol[helicopterIndex1].trips[tripIndex1]);
+    syncPickups(sol[helicopterIndex2].trips[tripIndex2]);
 
-    if (!planFeasible(p, sol[hi1]) || !planFeasible(p, sol[hi2])){
+    if (!planFeasible(p, sol[helicopterIndex1]) || !planFeasible(p, sol[helicopterIndex2])){
         // revert
-        sol[hi1].trips[ti1].drops[di1] = d1;
-        sol[hi2].trips[ti2].drops[di2] = d2;
-        syncPickups(sol[hi1].trips[ti1]);
-        syncPickups(sol[hi2].trips[ti2]);
+        sol[helicopterIndex1].trips[tripIndex1].drops[dropIndex1] = d1;
+        sol[helicopterIndex2].trips[tripIndex2].drops[dropIndex2] = d2;
+        syncPickups(sol[helicopterIndex1].trips[tripIndex1]);
+        syncPickups(sol[helicopterIndex2].trips[tripIndex2]);
         return false;
     }
     return true;
@@ -390,22 +390,22 @@ static bool nbd_relocate_drop_within_heli(Solution& sol, const ProblemData& p, s
     // pick a helicopter with at least 2 non-empty trips
     vector<int> candidates;
     candidates.reserve(sol.size());
-    for (int hi = 0; hi < (int)sol.size(); ++hi){
+    for (int helicopterIndex = 0; helicopterIndex < (int)sol.size(); ++helicopterIndex){
         int nz = 0;
-        for (const auto& t : sol[hi].trips) if (!t.drops.empty()) ++nz;
-        if (nz >= 2) candidates.push_back(hi);
+        for (const auto& t : sol[helicopterIndex].trips) if (!t.drops.empty()) ++nz;
+        if (nz >= 2) candidates.push_back(helicopterIndex);
     }
     if (candidates.empty()) return false;
 
     std::uniform_int_distribution<int> Uh(0, (int)candidates.size() - 1);
-    int hi = candidates[Uh(rng)];
+    int helicopterIndex = candidates[Uh(rng)];
 
-    HelicopterPlan plan = sol[hi];
+    HelicopterPlan plan = sol[helicopterIndex];
 
     vector<int> T;
     T.reserve(plan.trips.size());
-    for (int ti = 0; ti < (int)plan.trips.size(); ++ti)
-        if (!plan.trips[ti].drops.empty()) T.push_back(ti);
+    for (int tripIndex = 0; tripIndex < (int)plan.trips.size(); ++tripIndex)
+        if (!plan.trips[tripIndex].drops.empty()) T.push_back(tripIndex);
 
     if ((int)T.size() < 2) return false;
 
@@ -419,11 +419,11 @@ static bool nbd_relocate_drop_within_heli(Solution& sol, const ProblemData& p, s
 
     // choose a drop from the source trip
     std::uniform_int_distribution<int> Ud(0, (int)src.drops.size() - 1);
-    int di = Ud(rng);
-    Drop moved = src.drops[di];
+    int dropIndex = Ud(rng);
+    Drop moved = src.drops[dropIndex];
 
     // remove from source
-    src.drops.erase(src.drops.begin() + di);
+    src.drops.erase(src.drops.begin() + dropIndex);
     syncPickups(src);
 
     const int heli_idx = heliIdxById(plan.helicopter_id);
@@ -467,21 +467,21 @@ static bool nbd_relocate_drop_within_heli(Solution& sol, const ProblemData& p, s
     if (!planFeasible(p, plan)) return false;
 
     // write back
-    sol[hi] = std::move(plan);
+    sol[helicopterIndex] = std::move(plan);
     return true;
 }
 
 // Neighborhood dispatcher
-static bool apply_random_neighborhood(Solution& cand, const ProblemData& p, std::mt19937& rng){
+static bool apply_random_neighborhood(Solution& trialPlan, const ProblemData& p, std::mt19937& rng){
     std::uniform_int_distribution<int> U(0, 1);
     int pick = U(rng);
 
     if (pick == 0){
-        if (nbd_relocate_drop_within_heli(cand, p, rng)) return true;
-        return nbd_swap_two_trip_drops(cand, p, rng);
+        if (nbd_relocate_drop_within_heli(trialPlan, p, rng)) return true;
+        return nbd_swap_two_trip_drops(trialPlan, p, rng);
     } else {
-        if (nbd_swap_two_trip_drops(cand, p, rng)) return true;
-        return nbd_relocate_drop_within_heli(cand, p, rng);
+        if (nbd_swap_two_trip_drops(trialPlan, p, rng)) return true;
+        return nbd_relocate_drop_within_heli(trialPlan, p, rng);
     }
 }
 
@@ -500,14 +500,14 @@ static Solution local_search_improve(const ProblemData& problem, const Solution&
     auto deadline = steady_clock::now() + remaining;
     
     for (int it = 0; it < iters && steady_clock::now() < deadline; ++it){
-        Solution cand = cur;
-        bool changed = apply_random_neighborhood(cand, problem, rng);
+        Solution trialPlan = cur;
+        bool changed = apply_random_neighborhood(trialPlan, problem, rng);
         if (!changed) continue;
 
-        if (!solutionFeasible(problem, cand)) continue;
-        double s = evaluateSolution(problem, cand);
+        if (!solutionFeasible(problem, trialPlan)) continue;
+        double s = evaluateSolution(problem, trialPlan);
         if (s > curScore){
-            cur = std::move(cand);
+            cur = std::move(trialPlan);
             curScore = s;
             if (s > bestScore){
                 best = cur;
@@ -518,7 +518,6 @@ static Solution local_search_improve(const ProblemData& problem, const Solution&
     }
     return best;
 }
-
 
 Solution solve(const ProblemData& problem) {
     cout << "Starting solver..." << endl;
